@@ -13,14 +13,25 @@ function App() {
   const [searchTerm, setSearchTerm] = useState('');
   const [darkMode, setDarkMode] = useState(true);
 
-  // --- دالة المعالجة المصغرة (الحل السحري) ---
-  const processImage = (imgElement) => {
+  // 1. دالة معالجة الصور (التصغير والضغط لضمان السرعة وتوفير المساحة)
+  const processImage = (imgElement, width = 224, height = 224) => {
     const canvas = document.createElement('canvas');
-    canvas.width = 224;
-    canvas.height = 224;
+    canvas.width = width;
+    canvas.height = height;
     const ctx = canvas.getContext('2d');
-    ctx.drawImage(imgElement, 0, 0, 224, 224);
+    ctx.drawImage(imgElement, 0, 0, width, height);
     return canvas;
+  };
+
+  // 2. خوارزمية المقارنة السريعة (بدون استخدام Tensors داخل الحلقات لزيادة السرعة)
+  const calculateSimilarity = (vecA, vecB) => {
+    let dotProduct = 0, mA = 0, mB = 0;
+    for (let i = 0; i < vecA.length; i++) {
+      dotProduct += vecA[i] * vecB[i];
+      mA += vecA[i] * vecA[i];
+      mB += vecB[i] * vecB[i];
+    }
+    return dotProduct / (Math.sqrt(mA) * Math.sqrt(mB));
   };
 
   useEffect(() => {
@@ -37,7 +48,8 @@ function App() {
       setInventory(allData.reverse());
       try {
         await tf.ready();
-        const loadedModel = await mobilenet.load();
+        // تحميل النموذج بنسخة خفيفة
+        const loadedModel = await mobilenet.load({ version: 1, alpha: 0.25 });
         setModel(loadedModel);
         setStatus('✅ Sami AI جاهز للعمل');
       } catch (e) { 
@@ -47,62 +59,45 @@ function App() {
     init();
   }, []);
 
-  const calculateSimilarity = (vecA, vecB) => {
-    return tf.tidy(() => {
-      const a = tf.tensor1d(vecA);
-      const b = tf.tensor1d(vecB);
-      const dotProduct = a.dot(b).dataSync()[0];
-      const normA = a.norm().dataSync()[0];
-      const normB = b.norm().dataSync()[0];
-      return dotProduct / (normA * normB);
-    });
-  };
-
+  // 3. البحث البصري المحسن
   const searchByImage = async (e) => {
     const file = e.target.files[0];
     if (!file || !model) return;
 
-    setStatus('🔍 جاري التحليل (نسخة سريعة)...');
+    setStatus('🔍 جاري التحليل السريع...');
     const reader = new FileReader();
     reader.onload = async (f) => {
       const img = new Image();
       img.src = f.target.result;
       img.onload = async () => {
-        // استخدام tf.tidy لتنظيف الذاكرة فوراً
-        const resultVector = tf.tidy(() => {
-          const smallImg = processImage(img); // تصغير الصورة هنا
-          const activation = model.infer(smallImg, true);
+        // تصغير الصورة قبل التحليل
+        const smallCanvas = processImage(img);
+        
+        const queryVector = tf.tidy(() => {
+          const activation = model.infer(smallCanvas, true);
           return Array.from(activation.dataSync());
         });
         
         const allItems = await db.getAll('items');
         const results = allItems.map(item => ({
           ...item,
-          score: calculateSimilarity(resultVector, item.vector)
+          score: calculateSimilarity(queryVector, item.vector)
         }));
 
         const filtered = results
-          .filter(res => res.score > 0.65)
+          .filter(res => res.score > 0.60) // تقليل العتبة قليلاً لمرونة أكبر
           .sort((a, b) => b.score - a.score);
 
         setInventory(filtered);
-        setStatus(filtered.length > 0 ? `✅ تم إيجاد ${filtered.length} مطابقة` : '❌ لم يتم العثور على قطع مشابهة');
+        setStatus(filtered.length > 0 ? `✅ تم إيجاد ${filtered.length} مطابقة` : '❌ لا يوجد نتائج مشابهة');
       };
     };
     reader.readAsDataURL(file);
   };
 
-  const handleFileSelect = (e) => {
-    const files = Array.from(e.target.files);
-    files.forEach(file => {
-      const reader = new FileReader();
-      reader.onload = (f) => setPreviews(prev => [...prev, f.target.result]);
-      reader.readAsDataURL(file);
-    });
-  };
-
+  // 4. الحفظ الذكي (حفظ الصور المصغرة فقط لتجنب امتلاء الذاكرة)
   const saveProduct = async () => {
-    if (!product.name || previews.length === 0) return alert("أدخل اسم الصنف وصورة واحدة على الأقل!");
+    if (!product.name || previews.length === 0) return alert("أدخل البيانات والصورة!");
     setStatus('💾 جاري الحفظ وتوليد البصمة...');
 
     for (const imgBase64 of previews) {
@@ -110,17 +105,23 @@ function App() {
       img.src = imgBase64;
       await new Promise(res => {
         img.onload = async () => {
+          const smallCanvas = processImage(img);
+          
+          // توليد البصمة الرقمية
           const vector = tf.tidy(() => {
-            const smallImg = processImage(img); // تصغير قبل الحفظ
-            return Array.from(model.infer(smallImg, true).dataSync());
+            const activation = model.infer(smallCanvas, true);
+            return Array.from(activation.dataSync());
           });
+
+          // حفظ النسخة المصغرة فقط (DataURL) لتوفير المساحة
+          const compressedImg = smallCanvas.toDataURL('image/jpeg', 0.7);
 
           await db.add('items', { 
             name: product.name, 
             price: product.price || '0', 
             qty: product.qty || '1',
             vector, 
-            image: imgBase64 
+            image: compressedImg 
           });
           res();
         };
@@ -134,11 +135,19 @@ function App() {
     setStatus('✅ تم الحفظ بنجاح');
   };
 
-  // ... (باقي الدوال كما هي: refreshInventory, shareWhatsApp)
+  const handleFileSelect = (e) => {
+    const files = Array.from(e.target.files);
+    files.forEach(file => {
+      const reader = new FileReader();
+      reader.onload = (f) => setPreviews(prev => [...prev, f.target.result]);
+      reader.readAsDataURL(file);
+    });
+  };
+
   const refreshInventory = async () => {
     const allData = await db.getAll('items');
     setInventory(allData.reverse());
-    setStatus('✅ تم عرض كل المخزن');
+    setStatus('✅ تم تحديث المخزن');
   };
 
   const shareWhatsApp = (item) => {
@@ -155,8 +164,8 @@ function App() {
 
   return (
     <div style={{ padding: '15px', direction: 'rtl', backgroundColor: theme.bg, color: theme.text, minHeight: '100vh', transition: '0.3s', fontFamily: 'sans-serif' }}>
-       {/* الـ JSX يبقى كما هو تماماً كما في كودك الأصلي */}
-       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
+      
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
         <button onClick={() => setDarkMode(!darkMode)} style={miniBtn(theme)}>{darkMode ? '☀️ نهار' : '🌙 ليل'}</button>
         <h2 style={{ color: theme.accent, margin: 0, fontSize: '18px' }}>Visual Discovery AI</h2>
         <button onClick={refreshInventory} style={miniBtn(theme)}>🔄 تحديث</button>
@@ -195,8 +204,8 @@ function App() {
           <div key={item.id} style={{ background: theme.card, borderRadius: '12px', overflow: 'hidden', border: `1px solid ${darkMode ? '#333' : '#ddd'}` }}>
             <img src={item.image} style={{ width: '100%', height: '110px', objectFit: 'cover' }} alt={item.name} />
             <div style={{ padding: '8px' }}>
-              <p style={{ margin: 0, fontWeight: 'bold', fontSize: '12px' }}>{item.name}</p>
-              <p style={{ color: theme.accent, fontSize: '11px' }}>{item.price} ريال</p>
+              <p style={{ margin: 0, fontWeight: 'bold', fontSize: '12px', whiteSpace: 'nowrap', overflow: 'hidden' }}>{item.name}</p>
+              <p style={{ color: theme.accent, fontSize: '11px', margin: '4px 0' }}>{item.price} ريال</p>
               <div style={{ display: 'flex', justifyContent: 'space-between', borderTop: '1px solid #444', paddingTop: '5px' }}>
                 <button onClick={() => shareWhatsApp(item)} style={actionBtn}>📲 مشاركة</button>
                 <button onClick={async () => { if(window.confirm('حذف؟')) { await db.delete('items', item.id); setInventory(inventory.filter(x => x.id !== item.id)) } }} style={{ ...actionBtn, color: '#ff5252' }}>🗑️ حذف</button>
@@ -209,15 +218,15 @@ function App() {
   );
 }
 
-// ... الستايلات (تبقى كما هي في كودك)
+// الستايلات المساعدة
 const miniBtn = (theme) => ({ padding: '6px 12px', fontSize: '11px', borderRadius: '8px', border: 'none', cursor: 'pointer', background: theme.card, color: theme.text });
 const uploadBtn = (color) => ({ flex: 1, padding: '12px', background: color, color: '#000', borderRadius: '10px', textAlign: 'center', fontSize: '12px', fontWeight: 'bold', cursor: 'pointer' });
 const previewScroll = { display: 'flex', gap: '8px', overflowX: 'auto', marginBottom: '15px', padding: '5px' };
 const thumbStyle = { width: '80px', height: '80px', borderRadius: '8px', objectFit: 'cover', border: '2px solid #00e676' };
 const delThumb = { position: 'absolute', top: -5, right: -5, background: '#ff5252', color: 'white', border: 'none', borderRadius: '50%', width: '20px', height: '20px', cursor: 'pointer', fontSize: '12px' };
 const inStyle = (theme) => ({ width: '100%', padding: '12px', marginBottom: '10px', borderRadius: '10px', border: 'none', background: theme.bg, color: theme.text, outline: 'none' });
-const saveBtn = (color) => ({ width: '100%', padding: '15px', borderRadius: '10px', border: 'none', background: color, color: '#000', fontWeight: 'bold', cursor: 'pointer', boxShadow: '0 4px 6px rgba(0,0,0,0.2)' });
-const searchStyle = (theme) => ({ width: '100%', padding: '15px', borderRadius: '25px', border: 'none', background: theme.card, color: theme.text, marginTop: '20px', outline: 'none', boxShadow: 'inset 0 2px 4px rgba(0,0,0,0.5)' });
+const saveBtn = (color) => ({ width: '100%', padding: '15px', borderRadius: '10px', border: 'none', background: color, color: '#000', fontWeight: 'bold', cursor: 'pointer' });
+const searchStyle = (theme) => ({ width: '100%', padding: '15px', borderRadius: '25px', border: 'none', background: theme.card, color: theme.text, marginTop: '20px', outline: 'none' });
 const gridStyle = { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginTop: '10px' };
 const actionBtn = { background: 'none', border: 'none', fontSize: '11px', cursor: 'pointer', color: '#38bdf8', padding: '5px' };
 

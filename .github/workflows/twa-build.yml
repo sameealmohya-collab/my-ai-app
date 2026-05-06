@@ -13,14 +13,15 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20' # تحديث لنسخة أحدث ومستقرة
+          node-version: '20'
 
       - name: Install Bubblewrap
         run: npm install -g @bubblewrap/cli
 
       - name: Build APK
+        # استخدمنا هنا "yes" لإجابة كل الأسئلة بـ نعم تلقائياً
         run: |
-          bubblewrap init --manifest=https://my-ai-app-kappa-khaki.vercel.app/manifest.json --extracp=false
+          yes | bubblewrap init --manifest=https://my-ai-app-kappa-khaki.vercel.app/manifest.json --extracp=false
           bubblewrap build --skipConfig
           
       - name: Upload APK

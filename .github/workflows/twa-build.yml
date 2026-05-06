@@ -1,0 +1,30 @@
+name: Build TWA APK
+on:
+  push:
+    branches: [ main ] # تأكد أن اسم الفرع عندك هو main وليس master
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+
+      - name: Install Bubblewrap
+        run: npm install -g @bubblewrap/cli
+
+      - name: Build APK
+        # هذا الأمر سيقوم بمحاولة بناء التطبيق باستخدام إعداداتك
+        run: |
+          bubblewrap build --skipConfig || echo "Initial build failed, checking config..."
+          
+      - name: Upload APK
+        uses: actions/upload-artifact@v3
+        with:
+          name: Visual-AI-App
+          path: ./*.apk

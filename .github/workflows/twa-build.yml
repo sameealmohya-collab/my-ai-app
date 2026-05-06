@@ -8,24 +8,23 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Setup Node.js
-        uses: actions/setup-node@v3
+        uses: actions/setup-node@v4
         with:
-          node-version: '18'
+          node-version: '20' # تحديث لنسخة أحدث ومستقرة
 
       - name: Install Bubblewrap
         run: npm install -g @bubblewrap/cli
 
       - name: Build APK
-        # هذا الأمر سيقوم بإنشاء الإعدادات والبناء في خطوة واحدة
         run: |
           bubblewrap init --manifest=https://my-ai-app-kappa-khaki.vercel.app/manifest.json --extracp=false
           bubblewrap build --skipConfig
           
       - name: Upload APK
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: Visual-AI-App
           path: ./*.apk
